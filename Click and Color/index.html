@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>İnteraktif Maske Renklendirici</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Interaktif elementler için temel stil */
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
+        .container { max-width: 90vw; margin: 0 auto; padding: 20px; }
+        #canvas-container {
+            /* Canvas'ı ortalar ve gölge ekler */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-top: 1rem;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            background-color: #ffffff; /* Beyaz zemin */
+        }
+        #colorCanvas {
+            cursor: crosshair;
+            border-radius: 10px;
+            /* Başlangıçta gizli */
+            display: none;
+            max-width: 100%;
+            height: auto;
+        }
+        #message-box {
+            min-height: 48px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+    <div class="container p-4 sm:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">Bölge Renklendirici</h1>
+            <p class="text-gray-500">PNG maske dosyanızı yükleyin ve renklendirmek istediğiniz beyaz/boş alanlara tıklayın!</p>
+        </header>
+
+        <!-- Kontroller ve Mesaj Kutusu -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-6">
+            <div class="flex flex-col sm:flex-row gap-4 items-center justify-between">
+                <!-- Dosya Yükleme -->
+                <div class="w-full sm:w-auto flex-grow">
+                    <label class="block text-sm font-medium text-gray-700 mb-1" for="imageUpload">
+                        Maske PNG Yükle (Siyah Sınırlar, Renklendirilecek Alanlar)
+                    </label>
+                    <input type="file" id="imageUpload" accept="image/png" class="block w-full text-sm text-gray-900 
+                        file:mr-4 file:py-2 file:px-4
+                        file:rounded-full file:border-0
+                        file:text-sm file:font-semibold
+                        file:bg-indigo-50 file:text-indigo-700
+                        hover:file:bg-indigo-100"
+                    >
+                </div>
+                
+                <!-- Mesaj Kutusu -->
+                <div id="message-box" class="w-full sm:w-auto p-3 text-sm rounded-lg border border-gray-200 text-gray-600 flex items-center justify-center bg-gray-50">
+                    Lütfen bir maske haritası yükleyin.
+                </div>
+            </div>
+            
+            <div class="mt-4 flex flex-col sm:flex-row gap-3">
+                 <!-- Kaydet Butonu -->
+                <button id="saveButton" disabled 
+                    class="w-full sm:w-auto px-6 py-2 bg-green-500 text-white font-semibold rounded-full shadow-md hover:bg-green-600 transition duration-150 disabled:opacity-50 disabled:cursor-not-allowed">
+                    Renkli Görüntüyü Kaydet
+                </button>
+            </div>
+        </div>
+
+        <!-- Canvas Alanı -->
+        <div id="canvas-container" class="border border-dashed border-gray-300 min-h-64 flex flex-col items-center justify-center p-4">
+            <canvas id="colorCanvas"></canvas>
+            <p id="placeholderText" class="text-gray-400">Yüklenecek görüntü burada görünecek.</p>
+        </div>
+
+    </div>
+
+    <script>
+        // DOM Elementleri
+        const canvas = document.getElementById('colorCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const imageUpload = document.getElementById('imageUpload');
+        const saveButton = document.getElementById('saveButton');
+        const messageBox = document.getElementById('message-box');
+        const placeholderText = document.getElementById('placeholderText');
+        const canvasContainer = document.getElementById('canvas-container');
+
+        // Sabitler
+        const BORDER_COLOR = 0;   // Siyah R, G, B değeri (Sınırları durdurmak için)
+
+        // Durum Yönetimi
+        let imageData = null;
+        const usedColors = new Set(); // Benzersiz renk kodlarını depolamak için Set
+
+        // Yönler (4-bağlantı: Yukarı, Aşağı, Sol, Sağ)
+        const directions = [
+            { dx: 0, dy: -1 }, // Yukarı
+            { dx: 0, dy: 1 },  // Aşağı
+            { dx: -1, dy: 0 }, // Sol
+            { dx: 1, dy: 0 }   // Sağ
+        ];
+
+        // --- Yardımcı Fonksiyonlar ---
+
+        function updateMessage(text, isError = false) {
+            messageBox.textContent = text;
+            messageBox.className = `w-full sm:w-auto p-3 text-sm rounded-lg border flex items-center justify-center ${isError 
+                ? 'border-red-400 bg-red-50 text-red-700' 
+                : 'border-green-400 bg-green-50 text-green-700'}`;
+        }
+        
+        // Rastgele Benzersiz Renk Üretici
+        function generateUniqueColor() {
+            let colorString;
+            let r, g, b;
+
+            // Rastgele renk üretilene ve bu renk daha önce kullanılmayana kadar döngü
+            do {
+                // Siyah sınırlardan iyi ayırt edilebilmesi için 50-255 aralığında RGB üretilir
+                r = Math.floor(Math.random() * 205) + 50; 
+                g = Math.floor(Math.random() * 205) + 50;
+                b = Math.floor(Math.random() * 205) + 50;
+                colorString = `${r},${g},${b}`;
+            } while (usedColors.has(colorString));
+
+            usedColors.add(colorString);
+            return { r, g, b, colorString };
+        }
+
+        // --- Ana Algoritma: Flood Fill (BFS) ---
+
+        function floodFill(startX, startY) {
+            if (!imageData) return;
+
+            const { width, height, data } = imageData;
+            const index = (startY * width + startX) * 4;
+
+            // 1. Tıklanan pikselin rengini hedef renk olarak kaydet
+            const targetR = data[index];
+            const targetG = data[index + 1];
+            const targetB = data[index + 2];
+            const targetA = data[index + 3];
+            
+            // Piksellerin targetColor ile eşleşip eşleşmediğini kontrol eden yardımcı fonksiyon
+            const matchesTargetColor = (r, g, b) => r === targetR && g === targetG && b === targetB;
+
+            // 2. Başlangıç pikseli siyah bir sınır mı?
+            if (targetR === BORDER_COLOR && targetG === BORDER_COLOR && targetB === BORDER_COLOR) {
+                updateMessage("Sınır (siyah) üzerine tıkladınız. Lütfen renklendirilecek bir alana tıklayın.", true);
+                return;
+            }
+
+            // Başlangıç pikseli zaten renklendirilmiş mi? 
+            // Eğer RGB değerleri başlangıçtaki targetColor değilse, renklendirilmiş demektir.
+            // Bu, tek renkli maskeler için geçerlidir.
+            if (!matchesTargetColor(targetR, targetG, targetB) && (targetR !== targetG || targetG !== targetB)) {
+                updateMessage("Bu bölge zaten renklendirilmiş. Farklı bir alana tıklayın.", true);
+                return;
+            }
+
+
+            // Yeni Benzersiz Rengi Üret
+            const newColor = generateUniqueColor();
+            const newR = newColor.r;
+            const newG = newColor.g;
+            const newB = newColor.b;
+
+            // Hızlı BFS için kuyruk
+            const queue = [[startX, startY]];
+            let pixelsFilled = 0;
+            
+            updateMessage(`Bölge renklendiriliyor... Yeni renk: RGB(${newR}, ${newG}, ${newB})`, false);
+
+            while (queue.length > 0) {
+                // Hızlı kuyruk erişimi
+                const [px, py] = queue.shift();
+                
+                const currentIdx = (py * width + px) * 4;
+
+                // Geçerli pikselin hala renklendirilecek targetColor olup olmadığını kontrol et
+                if (!matchesTargetColor(data[currentIdx], data[currentIdx + 1], data[currentIdx + 2])) {
+                    continue;
+                }
+                
+                // Rengi değiştir
+                data[currentIdx] = newR;
+                data[currentIdx + 1] = newG;
+                data[currentIdx + 2] = newB;
+                data[currentIdx + 3] = targetA; // Alfa kanalını koru.
+                pixelsFilled++;
+
+                // Komşuları kontrol et
+                for (const { dx, dy } of directions) {
+                    const nx = px + dx;
+                    const ny = py + dy;
+
+                    // Sınır kontrolü
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const neighborIdx = (ny * width + nx) * 4;
+                        
+                        // Komşu piksel hala hedef renkte mi?
+                        if (matchesTargetColor(data[neighborIdx], data[neighborIdx + 1], data[neighborIdx + 2])) {
+                            queue.push([nx, ny]);
+                        }
+                    }
+                }
+            }
+
+            // Değiştirilmiş veriyi canvas'a geri yaz
+            ctx.putImageData(imageData, 0, 0);
+            updateMessage(`Başarıyla renklendirildi! Doldurulan piksel sayısı: ${pixelsFilled}. Toplam ${usedColors.size} bölge renklendirildi.`);
+        }
+
+        // --- Olay İşleyicileri ---
+
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    // Canvas boyutlarını görüntüye ayarla
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    
+                    // Canvas'a görüntüyü çiz
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // imageData'yı al ve global olarak sakla (Flood Fill için gerekli)
+                    imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    
+                    // Görünürlüğü ve boyutlandırmayı ayarla (Responsive)
+                    placeholderText.style.display = 'none';
+                    canvas.style.display = 'block';
+                    canvas.style.maxWidth = '100%';
+                    canvas.style.height = 'auto';
+                    canvasContainer.classList.remove('min-h-64');
+                    
+                    // Durumu sıfırla
+                    usedColors.clear();
+                    saveButton.disabled = false;
+                    updateMessage("Harita yüklendi. Renklendirmeye başlamak için boş bir alana tıklayın!");
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function handleClick(event) {
+            if (!imageData) return;
+
+            // Canvas'ın sayfadaki konumunu al
+            const rect = canvas.getBoundingClientRect();
+            
+            // Tıklama koordinatlarını (x, y) hesapla
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+            
+            // Canvas boyutuna göre ölçekleme (Görüntü CSS ile ölçeklenmişse gerekli)
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            const pixelX = Math.floor(clickX * scaleX);
+            const pixelY = Math.floor(clickY * scaleY);
+
+            // Flood Fill'i başlat
+            floodFill(pixelX, pixelY);
+        }
+
+        function handleSave() {
+            if (usedColors.size === 0) {
+                 updateMessage("Henüz hiç bölge renklendirilmedi. Lütfen önce renklendirme yapın.", true);
+                 return;
+            }
+            // Canvas içeriğini PNG olarak kaydetme
+            const dataURL = canvas.toDataURL('image/png');
+            const link = document.createElement('a');
+            link.href = dataURL;
+            link.download = 'renklendirilmis_maske.png';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            updateMessage("Renkli görüntü başarıyla indirildi!", false);
+        }
+
+        // --- Olay Dinleyicilerini Ayarla ---
+        imageUpload.addEventListener('change', handleImageUpload);
+        canvas.addEventListener('click', handleClick);
+        saveButton.addEventListener('click', handleSave);
+        
+    </script>
+</body>
+</html>
