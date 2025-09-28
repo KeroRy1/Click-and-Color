@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Basit Bölge Renklendirici</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* İnteraktif elementler için temel stil */
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
+        .container { max-width: 90vw; margin: 0 auto; padding: 20px; }
+        #canvas-container {
+            /* Canvas'ı ortalar ve gölge ekler */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-top: 1rem;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            background-color: #ffffff; /* Beyaz zemin */
+        }
+        #colorCanvas {
+            cursor: crosshair;
+            border-radius: 10px;
+            /* Başlangıçta gizli */
+            display: none;
+            max-width: 100%;
+            height: auto;
+        }
+        #message-box {
+            min-height: 48px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+    <div class="container p-4 sm:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-indigo-700 mb-2">Bölgesel Harita Renklendirici (SADECE Siyah Çizgiler Arası)</h1>
+            <p class="text-gray-500">Lütfen PNG maske dosyanızı yükleyin. Görüntü otomatik olarak siyah-beyaza dönüştürülür ve boş alanlara tıkladığınızda o bölgeyi tamamen renklendirir.</p>
+        </header>
+
+        <!-- Kontroller ve Mesaj Kutusu -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-6">
+            
+            <div class="flex flex-col sm:flex-row gap-4 items-center justify-between mt-4">
+                <!-- Dosya Yükleme -->
+                <div class="w-full sm:w-auto flex-grow">
+                    <label class="block text-sm font-medium text-gray-700 mb-1" for="imageUpload">
+                        Maske PNG Yükle
+                    </label>
+                    <input type="file" id="imageUpload" accept="image/png, image/jpeg, image/jpg" class="block w-full text-sm text-gray-900 
+                        file:mr-4 file:py-2 file:px-4
+                        file:rounded-full file:border-0
+                        file:text-sm file:font-semibold
+                        file:bg-indigo-50 file:text-indigo-700
+                        hover:file:bg-indigo-100"
+                    >
+                </div>
+                
+                <!-- Mesaj Kutusu -->
+                <div id="message-box" class="w-full sm:w-auto p-3 text-sm rounded-lg border border-gray-200 text-gray-600 flex items-center justify-center bg-gray-50">
+                    Lütfen bir maske haritası yükleyin.
+                </div>
+            </div>
+            
+            <div class="mt-4 flex flex-col sm:flex-row gap-3 justify-end">
+                <!-- Geri Al Butonu -->
+                <button id="resetButton" disabled 
+                    class="w-full sm:w-auto px-6 py-2 bg-red-400 text-white font-semibold rounded-full shadow-md hover:bg-red-500 transition duration-150 disabled:opacity-50 disabled:cursor-not-allowed">
+                    Orijinal Maskeye Dön / Renkleri Sıfırla
+                </button>
+                 <!-- Kaydet Butonu -->
+                <button id="saveButton" disabled 
+                    class="w-full sm:w-auto px-6 py-2 bg-green-500 text-white font-semibold rounded-full shadow-md hover:bg-green-600 transition duration-150 disabled:opacity-50 disabled:cursor-not-allowed">
+                    Renkli Görüntüyü Kaydet
+                </button>
+            </div>
+        </div>
+
+        <!-- Canvas Alanı -->
+        <div id="canvas-container" class="border border-dashed border-gray-300 min-h-64 flex flex-col items-center justify-center p-4">
+            <canvas id="colorCanvas"></canvas>
+            <p id="placeholderText" class="text-gray-400">Yüklenecek görüntü burada görünecek.</p>
+        </div>
+
+    </div>
+
+    <script>
+        // DOM Elementleri
+        const canvas = document.getElementById('colorCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const imageUpload = document.getElementById('imageUpload');
+        const saveButton = document.getElementById('saveButton');
+        const resetButton = document.getElementById('resetButton');
+        const messageBox = document.getElementById('message-box');
+        const placeholderText = document.getElementById('placeholderText');
+        const canvasContainer = document.getElementById('canvas-container');
+
+        // Sabitler
+        const BORDER_COLOR = 0;   // Siyah R, G, B değeri (Çizgiler)
+        const FILL_COLOR = 255;   // Beyaz R, G, B değeri (Doldurulabilir Alan)
+        const THRESHOLD = 150;    // Binarizasyon için eşik değeri (150 altı siyah, üstü beyaz olur)
+
+        // Durum Yönetimi
+        let imageData = null;
+        let originalImageData = null; 
+        let binarizedImageData = null; // Binarize edilmiş, renksiz maske
+        const usedColors = new Set(); 
+
+        // Yönler (4-bağlantı: Yukarı, Aşağı, Sol, Sağ)
+        const directions = [
+            { dx: 0, dy: -1 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }, { dx: 1, dy: 0 }
+        ];
+
+        // --- Yardımcı Fonksiyonlar ---
+
+        function updateMessage(text, isError = false) {
+            messageBox.textContent = text;
+            messageBox.className = `w-full sm:w-auto p-3 text-sm rounded-lg border flex items-center justify-center ${isError 
+                ? 'border-red-400 bg-red-50 text-red-700' 
+                : 'border-green-400 bg-green-50 text-green-700'}`;
+        }
+        
+        // Rastgele Benzersiz Renk Üretici (Canlı ve Orta Parlaklıkta)
+        function generateUniqueColor() {
+            let colorString;
+            let r, g, b;
+
+            do {
+                // Renkleri 50-255 aralığında tutarak çok koyu renkleri önler
+                r = Math.floor(Math.random() * 205) + 50; 
+                g = Math.floor(Math.random() * 205) + 50;
+                b = Math.floor(Math.random() * 205) + 50;
+                colorString = `${r},${g},${b}`;
+            } while (usedColors.has(colorString));
+
+            usedColors.add(colorString);
+            return { r, g, b, colorString };
+        }
+        
+        /**
+         * Görüntüyü alır ve verilen eşik değerine göre katı siyah-beyaz maskeye dönüştürür (Binarizasyon).
+         * Bu, renk geçişlerini ortadan kaldırır ve Flood Fill'i garantiler.
+         */
+        function binarizeImage(sourceData, width, height) {
+            const data = sourceData.data;
+            const binarizedData = new Uint8ClampedArray(data.length);
+
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                const avg = (r + g + b) / 3;
+
+                // THRESHOLD'un altındaysa siyah (BORDER_COLOR), üstündeyse beyaz (FILL_COLOR)
+                const value = avg < THRESHOLD ? BORDER_COLOR : FILL_COLOR;
+                
+                binarizedData[i] = value;
+                binarizedData[i + 1] = value;
+                binarizedData[i + 2] = value;
+                binarizedData[i + 3] = data[i + 3]; // Alfa kanalını koru
+            }
+            return new ImageData(binarizedData, width, height);
+        }
+
+        // --- Geri Al (Reset) Fonksiyonu ---
+        function resetToOriginalMask() {
+            if (!binarizedImageData) {
+                updateMessage("Sıfırlanacak bir maske verisi bulunmuyor.", true);
+                return;
+            }
+            
+            // imageData'yı, binarize edilmiş ilk maske ile sıfırla
+            imageData = new ImageData(new Uint8ClampedArray(binarizedImageData.data), binarizedImageData.width, binarizedImageData.height);
+            ctx.putImageData(imageData, 0, 0);
+            
+            usedColors.clear();
+            updateMessage("Maske ve tüm renkler orijinal siyah-beyaz haline sıfırlandı. Tekrar renklendirmeye başlayabilirsiniz.");
+        }
+
+
+        // --- Ana Algoritma: Flood Fill (BFS) ---
+
+        function floodFill(startX, startY) {
+            if (!imageData) return;
+
+            const { width, height, data } = imageData;
+            const index = (startY * width + startX) * 4;
+
+            // Tıklanan pikselin sadece PURE WHITE (FILL_COLOR) olup olmadığını kontrol et
+            const isTargetWhite = (data[index] === FILL_COLOR && data[index + 1] === FILL_COLOR && data[index + 2] === FILL_COLOR);
+            const isTargetBorder = (data[index] === BORDER_COLOR && data[index + 1] === BORDER_COLOR && data[index + 2] === BORDER_COLOR);
+
+            if (isTargetBorder) {
+                updateMessage("Sınır (siyah çizgi) üzerine tıkladınız. Lütfen renklendirilecek boş alana tıklayın.", true);
+                return;
+            } 
+            
+            if (!isTargetWhite) {
+                updateMessage("Bu bölge zaten renklendirilmiş (beyaz değil). Lütfen başka bir boş (beyaz) alana tıklayın.", true);
+                return;
+            }
+
+            const newColor = generateUniqueColor();
+            const newR = newColor.r;
+            const newG = newColor.g;
+            const newB = newColor.b;
+            const targetA = data[index + 3]; // Alfa değerini koru
+
+            const queue = [[startX, startY]];
+            let pixelsFilled = 0;
+            
+            updateMessage(`Bölge renklendiriliyor...`);
+            
+            // Ziyaret edilenleri izlemek gereksiz, çünkü sadece beyazları hedefliyoruz
+            // Ancak BFS döngüsünü hızlandırmak için kullanmak faydalı olabilir, burada atlıyoruz
+            // çünkü her zaman sadece (255, 255, 255) hedefleniyor.
+
+            while (queue.length > 0) {
+                const [px, py] = queue.shift();
+                
+                const currentIdx = (py * width + px) * 4;
+
+                // SADECE PURE WHITE (255, 255, 255) olan pikselleri boya
+                if (!(data[currentIdx] === FILL_COLOR && data[currentIdx + 1] === FILL_COLOR && data[currentIdx + 2] === FILL_COLOR)) {
+                    continue; 
+                }
+                
+                // Renklendir
+                data[currentIdx] = newR;
+                data[currentIdx + 1] = newG;
+                data[currentIdx + 2] = newB;
+                data[currentIdx + 3] = targetA;
+                pixelsFilled++;
+
+                // 4-Bağlantılı Komşuları kontrol et
+                for (const { dx, dy } of directions) {
+                    const nx = px + dx;
+                    const ny = py + dy;
+
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const neighborIdx = (ny * width + nx) * 4;
+
+                        // Komşu da PURE WHITE ise kuyruğa ekle
+                        if (data[neighborIdx] === FILL_COLOR && data[neighborIdx + 1] === FILL_COLOR && data[neighborIdx + 2] === FILL_COLOR) {
+                            queue.push([nx, ny]);
+                        }
+                    }
+                }
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+            updateMessage(`Başarıyla renklendirildi! Doldurulan bölge sayısı: ${usedColors.size}.`);
+        }
+
+        // --- Olay İşleyicileri ---
+
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    // Canvas boyutlarını görüntüye ayarla
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Orijinal veriyi al
+                    originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    
+                    // Görüntüyü Siyah-Beyaz maskeye dönüştür
+                    binarizedImageData = binarizeImage(originalImageData, canvas.width, canvas.height);
+                    
+                    // Çalışma verisi olarak binarize edilmiş maskeyi kullan
+                    imageData = new ImageData(new Uint8ClampedArray(binarizedImageData.data), canvas.width, canvas.height);
+                    ctx.putImageData(imageData, 0, 0);
+
+
+                    // Görünürlüğü ayarla
+                    placeholderText.style.display = 'none';
+                    canvas.style.display = 'block';
+                    canvas.style.maxWidth = '100%';
+                    canvas.style.height = 'auto';
+                    canvasContainer.classList.remove('min-h-64');
+                    
+                    // Durumu sıfırla
+                    usedColors.clear();
+                    saveButton.disabled = false;
+                    resetButton.disabled = false;
+                    updateMessage("Maske yüklendi ve siyah-beyaz hale getirildi. Renklendirmeye başlayabilirsiniz!");
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function handleClick(event) {
+            if (!imageData) return;
+
+            const rect = canvas.getBoundingClientRect();
+            
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+            
+            // Canvas'ın görünen boyutu ile gerçek piksel boyutu arasındaki ölçek
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            const pixelX = Math.floor(clickX * scaleX);
+            const pixelY = Math.floor(clickY * scaleY);
+
+            floodFill(pixelX, pixelY);
+        }
+
+        function handleSave() {
+            if (!imageData) {
+                 updateMessage("Kaydedilecek bir görüntü yok.", true);
+                 return;
+            }
+            const dataURL = canvas.toDataURL('image/png');
+            const link = document.createElement('a');
+            link.href = dataURL;
+            link.download = 'renklendirilmis_harita.png';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            updateMessage("Renkli görüntü başarıyla indirildi!", false);
+        }
+
+        // --- Olay Dinleyicilerini Ayarla ---
+        imageUpload.addEventListener('change', handleImageUpload);
+        canvas.addEventListener('click', handleClick);
+        saveButton.addEventListener('click', handleSave);
+        resetButton.addEventListener('click', resetToOriginalMask);
+        
+    </script>
+</body>
+</html>
