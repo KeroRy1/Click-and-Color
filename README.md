@@ -25,7 +25,7 @@ Run: Double-click the index.html file inside the folder and select the browser y
 
 The application is now ready to use!
 
-#🖱️ How to Use "index.html" ?
+# 🖱️ How to Use "index.html" ?
 Once the application is open in your browser, click the 'Upload Mask PNG' button to select your mask map with black borders.
 
 When the map appears on the screen, click with your mouse or tap with your finger on the empty area (not the border) you wish to color.
@@ -36,7 +36,7 @@ Continue coloring different regions.
 
 When you are finished, click the 'Save Colored Image' button to download the colored PNG file.
 
-#🖱️ How to Use "index2.html" ?
+# 🖱️ How to Use "index2.html" ?
 Usage Note
 The usage for the index2.html file is as described above. The most important feature of this application is that it accurately colors only the area strictly enclosed by black lines/pixels.
 
